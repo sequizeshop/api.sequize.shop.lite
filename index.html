@@ -293,7 +293,7 @@ tbody tr:hover{background:var(--surface2)}
 
   <section class="page" id="page-products">
     <section class="panel">
-      <div class="panel-header"><div><div class="panel-title"><i class="ph ph-storefront"></i> Products</div><div class="panel-description">Add, edit or remove store products.</div></div><button class="btn btn-small" id="prodRefresh" type="button"><i class="ph ph-arrows-clockwise"></i> Refresh</button></div>
+      <div class="panel-header"><div><div class="panel-title"><i class="ph ph-storefront"></i> Products</div><div class="panel-description">Add, edit or remove store products.</div></div><div style="display:flex;gap:8px"><button class="btn btn-small" id="prodPriceToggle" type="button"><i class="ph ph-percent"></i> <span id="prodPriceToggleLabel">Prices</span></button><button class="btn btn-small" id="prodRefresh" type="button"><i class="ph ph-arrows-clockwise"></i> Refresh</button></div></div>
       <div class="panel-body">
         <div class="notice" id="prodNotice"></div>
         <div class="item-list" id="prodRows"><div class="loading">Connect the admin API to load products.</div></div>
@@ -1260,7 +1260,7 @@ function renderProducts(){
 }
 async function loadProducts(){
   $("prodRows").innerHTML=loadingHTML("Loading products...");
-  try{const d=await apiRequest(ENDPOINTS.products,{method:"GET"});products=Array.isArray(d.products)?d.products:[];renderProducts();hideNotice($("prodNotice"))}
+  try{const d=await apiRequest(ENDPOINTS.products,{method:"GET"});products=Array.isArray(d.products)?d.products:[];setPriceToggle(d.priceReductionActive===true);renderProducts();hideNotice($("prodNotice"))}
   catch(err){$("prodRows").innerHTML='<div class="empty-state">Unable to load.</div>';prodNotice(err.message+" (Backend route "+ENDPOINTS.products+" required.)","error");loaded.products=false}
 }
 function resetProductForm(){
@@ -1331,6 +1331,27 @@ $("prodForm").addEventListener("submit",async e=>{
   finally{busy.prod=false;$("prodSubmit").disabled=false}
 });
 $("prodRefresh").addEventListener("click",loadProducts);
+
+/* ---- Price toggle: reduce all by 70% / restore originals ---- */
+let priceReduced=false;
+function setPriceToggle(active){
+  priceReduced=!!active;
+  $("prodPriceToggleLabel").textContent=priceReduced?"Restore prices":"Reduce prices 70%";
+}
+setPriceToggle(false);
+$("prodPriceToggle").addEventListener("click",async()=>{
+  if(busy.priceToggle)return;
+  if(!confirm(priceReduced?"Restore all product prices to original?":"Reduce ALL product prices by 70%?"))return;
+  busy.priceToggle=true;$("prodPriceToggle").disabled=true;
+  try{
+    const d=await apiRequest(ENDPOINTS.products,{method:"PUT",body:JSON.stringify({action:"togglePrices"})});
+    products=Array.isArray(d.products)?d.products:[];renderProducts();
+    setPriceToggle(d.priceReductionActive===true);
+    const c=d.priceChange||{};
+    prodNotice((c.mode==="restored"?"Prices restored: ":"Prices updated: ")+(c.updatedProducts||0)+" products.","success");
+  }catch(err){prodNotice(err.message,"error")}
+  finally{busy.priceToggle=false;$("prodPriceToggle").disabled=false}
+});
 
 setImageFields([]);applyPreset();
 
