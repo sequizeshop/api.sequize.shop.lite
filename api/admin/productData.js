@@ -7,21 +7,20 @@
 // PUBLIC:
 //   GET ?resource=discounts[&email=...]
 //
-// ADMIN:
-//   All other operations require ADMIN_API_KEY.
+// ADMIN (Authorization: Bearer ADMIN_API_KEY):
+//   Everything else.
 //
-// NEW ACTION:
-//   POST ?resource=products
-//   Authorization: Bearer ADMIN_API_KEY
+// PRICE TOGGLE (products resource, PUT/POST):
+//   { "action": "togglePrices" }      -> reduced? restore : reduce by 70%
+//   { "action": "reduceAllPrices" }   -> reduce only
+//   { "action": "restoreAllPrices" }  -> restore only
 //
-//   {
-//     "action": "reduceAllPrices"
-//   }
-//
-// This reduces all existing product prices by 70%,
-// both INR and USD, with a maximum INR price of 10000.
-//
-// Each product is processed only once.
+// Reduced prices are written as plain normal prices. NOTHING is marked
+// on the product objects (no flags, no discountPercentage changes).
+// Original prices are kept in separate private paths:
+//   adminPriceBackup/{productId}
+//   adminPriceState
+// Nothing else in your app reads these paths.
 //
 // Environment variables:
 //   ADMIN_API_KEY
@@ -45,17 +44,26 @@ const PRODUCT_ID_PATTERN = /^[A-Za-z0-9]{40}$/;
 /* ---------------- PRICE REDUCTION CONFIG ---------------- */
 
 const PRICE_REDUCTION_PERCENT = 70;
-const PRICE_REMAINING_PERCENT = 1 - PRICE_REDUCTION_PERCENT / 100;
+const PRICE_REMAINING = 1 - PRICE_REDUCTION_PERCENT / 100;
 
-const MAX_PRODUCT_PRICE_INR = 10000;
+// Every reduced price stays below 30000.
+const MAX_PRODUCT_PRICE_INR = 29999;
 
-// Same conversion rate used by the existing cart API.
+// Same conversion rate used by the cart API.
 const USD_TO_INR = 85;
 
-const MAX_PRODUCT_PRICE_USD =
-  MAX_PRODUCT_PRICE_INR / USD_TO_INR;
+const MAX_PRODUCT_PRICE_USD = MAX_PRODUCT_PRICE_INR / USD_TO_INR;
 
-const PRICE_REDUCTION_MARKER = "priceReduction70Applied";
+// Private paths (not on product objects).
+const PRICE_BACKUP_PATH = "adminPriceBackup";
+const PRICE_STATE_PATH = "adminPriceState";
+
+// Fields an older version of this API may have written on products.
+const LEGACY_MARKER_FIELDS = [
+  "priceReduction70Applied",
+  "priceReduction70Percent",
+  "priceReduction70At"
+];
 
 /* ---------------- Firebase ---------------- */
 
@@ -75,9 +83,7 @@ function initializeFirebase() {
   try {
     serviceAccount = JSON.parse(value);
   } catch {
-    throw new Error(
-      "FIREBASE_SERVICE_ACCOUNT must contain valid JSON."
-    );
+    throw new Error("FIREBASE_SERVICE_ACCOUNT must contain valid JSON.");
   }
 
   if (serviceAccount.private_key) {
@@ -104,17 +110,8 @@ class HttpError extends Error {
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "GET, PUT, POST, OPTIONS"
-  );
-
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Authorization, Content-Type"
-  );
-
+  res.setHeader("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
   res.setHeader("Cache-Control", "no-store");
 }
 
@@ -122,25 +119,17 @@ function isAuthorized(req) {
   const expected = process.env.ADMIN_API_KEY;
 
   if (!expected) {
-    throw new HttpError(
-      500,
-      "ADMIN_API_KEY is not configured on the server."
-    );
+    throw new HttpError(500, "ADMIN_API_KEY is not configured on the server.");
   }
 
   const header = String(req.headers.authorization || "");
 
-  const token = header.startsWith("Bearer ")
-    ? header.slice(7).trim()
-    : "";
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 
   const a = Buffer.from(token);
   const b = Buffer.from(expected);
 
-  return (
-    a.length === b.length &&
-    crypto.timingSafeEqual(a, b)
-  );
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function generateProductId() {
@@ -163,10 +152,7 @@ function str(value, max, label, required = false) {
   }
 
   if (s.length > max) {
-    throw new HttpError(
-      400,
-      label + " is too long (max " + max + ")."
-    );
+    throw new HttpError(400, label + " is too long (max " + max + ").");
   }
 
   return s;
@@ -175,12 +161,7 @@ function str(value, max, label, required = false) {
 function num(
   value,
   label,
-  {
-    min = 0,
-    max = Infinity,
-    integer = false,
-    fallback = 0
-  } = {}
+  { min = 0, max = Infinity, integer = false, fallback = 0 } = {}
 ) {
   if (value === "" || value == null) return fallback;
 
@@ -212,10 +193,7 @@ function list(value, max, itemMax, label) {
     .filter(Boolean);
 
   if (out.length > max) {
-    throw new HttpError(
-      400,
-      "Too many items in " + label + "."
-    );
+    throw new HttpError(400, "Too many items in " + label + ".");
   }
 
   out.forEach(x => {
@@ -234,10 +212,7 @@ function urlOrEmpty(value, label) {
   const s = str(value, 2000, label);
 
   if (s && !/^https?:\/\//i.test(s)) {
-    throw new HttpError(
-      400,
-      label + " must start with http:// or https://"
-    );
+    throw new HttpError(400, label + " must start with http:// or https://");
   }
 
   return s;
@@ -254,9 +229,7 @@ function cleanProduct(input) {
     throw new HttpError(400, "Product data is missing.");
   }
 
-  const sourceId = String(
-    input.sourceId == null ? "" : input.sourceId
-  ).trim();
+  const sourceId = String(input.sourceId == null ? "" : input.sourceId).trim();
 
   if (sourceId && !/^\d+$/.test(sourceId)) {
     throw new HttpError(400, "Source ID must be a number.");
@@ -267,17 +240,13 @@ function cleanProduct(input) {
   images.forEach(u => urlOrEmpty(u, "Image URL"));
 
   const thumbnail =
-    urlOrEmpty(
-      input.thumbnail || input.image,
-      "Thumbnail"
-    ) || images[0] || "";
+    urlOrEmpty(input.thumbnail || input.image, "Thumbnail") ||
+    images[0] ||
+    "";
 
   let dimensions = null;
 
-  if (
-    input.dimensions &&
-    typeof input.dimensions === "object"
-  ) {
+  if (input.dimensions && typeof input.dimensions === "object") {
     const w = input.dimensions.width;
     const h = input.dimensions.height;
     const d = input.dimensions.depth;
@@ -301,127 +270,50 @@ function cleanProduct(input) {
     reviews = input.reviews
       .filter(r => r && typeof r === "object")
       .map(r => ({
-        rating: num(r.rating, "Review rating", {
-          min: 0,
-          max: 5
-        }),
-
-        comment: str(
-          r.comment,
-          1000,
-          "Review comment"
-        ),
-
+        rating: num(r.rating, "Review rating", { min: 0, max: 5 }),
+        comment: str(r.comment, 1000, "Review comment"),
         date: str(r.date, 40, "Review date"),
-
         reviewerName:
-          str(r.reviewerName, 100, "Reviewer name") ||
-          "Customer",
-
-        reviewerEmail: str(
-          r.reviewerEmail,
-          254,
-          "Reviewer email"
-        )
+          str(r.reviewerName, 100, "Reviewer name") || "Customer",
+        reviewerEmail: str(r.reviewerEmail, 254, "Reviewer email")
       }));
   }
 
-  const price = num(input.price, "Price", {
-    min: 0,
-    max: 1e9
-  });
+  const price = num(input.price, "Price", { min: 0, max: 1e9 });
 
   return {
     sourceId: sourceId || null,
-
     title: str(input.title, 200, "Title", true),
-
-    description: str(
-      input.description,
-      5000,
-      "Description"
-    ),
-
+    description: str(input.description, 5000, "Description"),
     category: str(input.category, 100, "Category"),
-
     brand: str(input.brand, 100, "Brand"),
-
     price,
-
     originalPrice: price,
-
-    originalPriceUSD: num(
-      input.originalPriceUSD,
-      "Original price (USD)",
-      {
-        min: 0,
-        max: 1e9
-      }
-    ),
-
+    originalPriceUSD: num(input.originalPriceUSD, "Original price (USD)", {
+      min: 0,
+      max: 1e9
+    }),
     discountPercentage: 0,
-
-    rating: num(input.rating, "Rating", {
-      min: 0,
-      max: 5
-    }),
-
-    stock: num(input.stock, "Stock", {
-      min: 0,
-      max: 1e9,
-      integer: true
-    }),
-
-    availabilityStatus: str(
-      input.availabilityStatus,
-      60,
-      "Availability status"
-    ),
-
+    rating: num(input.rating, "Rating", { min: 0, max: 5 }),
+    stock: num(input.stock, "Stock", { min: 0, max: 1e9, integer: true }),
+    availabilityStatus: str(input.availabilityStatus, 60, "Availability status"),
     thumbnail,
-
     images,
-
     tags: list(input.tags, 50, 60, "Tags"),
-
     sku: str(input.sku, 100, "SKU"),
-
     weight:
       input.weight === "" || input.weight == null
         ? null
         : num(input.weight, "Weight"),
-
     dimensions,
-
-    warrantyInformation: str(
-      input.warrantyInformation,
-      300,
-      "Warranty information"
-    ),
-
-    shippingInformation: str(
-      input.shippingInformation,
-      300,
-      "Shipping information"
-    ),
-
-    returnPolicy: str(
-      input.returnPolicy,
-      300,
-      "Return policy"
-    ),
-
+    warrantyInformation: str(input.warrantyInformation, 300, "Warranty information"),
+    shippingInformation: str(input.shippingInformation, 300, "Shipping information"),
+    returnPolicy: str(input.returnPolicy, 300, "Return policy"),
     minimumOrderQuantity: num(
       input.minimumOrderQuantity,
       "Minimum order quantity",
-      {
-        min: 1,
-        max: 1e6,
-        integer: true,
-        fallback: 1
-      }
+      { min: 1, max: 1e6, integer: true, fallback: 1 }
     ),
-
     reviews
   };
 }
@@ -435,11 +327,7 @@ function forFirebase(obj) {
     const v = obj[k];
 
     out[k] =
-      v === undefined
-        ? null
-        : Array.isArray(v) && !v.length
-          ? null
-          : v;
+      v === undefined ? null : Array.isArray(v) && !v.length ? null : v;
   });
 
   return out;
@@ -451,224 +339,177 @@ async function listProducts(db) {
   const raw = snap.val() || {};
 
   return Object.keys(raw)
-    .filter(
-      id => raw[id] && typeof raw[id] === "object"
-    )
-    .map(id => ({
-      ...raw[id],
-      id
-    }))
-    .sort(
-      (a, b) =>
-        (Number(b.createdAt) || 0) -
-        (Number(a.createdAt) || 0)
-    );
+    .filter(id => raw[id] && typeof raw[id] === "object")
+    .map(id => ({ ...raw[id], id }))
+    .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+}
+
+async function isPriceReductionActive(db) {
+  const snap = await db.ref(PRICE_STATE_PATH).once("value");
+  const s = snap.val();
+  return !!(s && s.active === true);
+}
+
+// Standard response for the products resource.
+async function productsPayload(db, extra) {
+  return {
+    products: await listProducts(db),
+    priceReductionActive: await isPriceReductionActive(db),
+    ...(extra || {})
+  };
 }
 
 /* =====================================================
-   BULK PRICE REDUCTION
+   BULK PRICE REDUCE / RESTORE
+   - Reduce: new price written as a normal price, original saved
+     in a separate private path. Nothing is marked on products.
+   - Restore: original prices come back from that backup.
 ===================================================== */
 
 async function reduceAllProductPrices(db) {
-  const productsRef = db.ref("products");
-
-  const snap = await productsRef.once("value");
-
-  const raw = snap.val() || {};
-
-  const ids = Object.keys(raw).filter(
-    id =>
-      raw[id] &&
-      typeof raw[id] === "object"
-  );
-
-  const summary = {
-    success: true,
-
-    reductionPercentage: PRICE_REDUCTION_PERCENT,
-
-    remainingPercentage:
-      PRICE_REMAINING_PERCENT * 100,
-
-    maximumPriceINR: MAX_PRODUCT_PRICE_INR,
-
-    maximumPriceUSD: roundPrice(
-      MAX_PRODUCT_PRICE_USD
-    ),
-
-    conversionRate: USD_TO_INR,
-
-    totalProducts: ids.length,
-
-    updatedProducts: 0,
-
-    alreadyReduced: 0,
-
-    skippedProducts: 0,
-
-    cappedINRProducts: 0,
-
-    cappedUSDProducts: 0,
-
-    categories: {},
-
-    completedAt: null
-  };
-
-  for (const id of ids) {
-    const productRef = productsRef.child(id);
-
-    const existing = raw[id];
-
-    const category =
-      String(existing.category || "uncategorized");
-
-    if (!summary.categories[category]) {
-      summary.categories[category] = {
-        total: 0,
-        updated: 0,
-        skipped: 0
-      };
-    }
-
-    summary.categories[category].total++;
-
-    // Existing reduction marker prevents double reduction.
-    if (existing[PRICE_REDUCTION_MARKER] === true) {
-      summary.alreadyReduced++;
-
-      summary.categories[category].skipped++;
-
-      continue;
-    }
-
-    const currentPrice = Number(existing.price);
-
-    if (
-      !Number.isFinite(currentPrice) ||
-      currentPrice < 0
-    ) {
-      summary.skippedProducts++;
-
-      summary.categories[category].skipped++;
-
-      continue;
-    }
-
-    let wasCappedINR = false;
-    let wasCappedUSD = false;
-
-    const result = await productRef.transaction(
-      current => {
-        if (!current || typeof current !== "object") {
-          return;
-        }
-
-        // Protect against simultaneous duplicate requests.
-        if (current[PRICE_REDUCTION_MARKER] === true) {
-          return;
-        }
-
-        const oldINR = Number(current.price);
-
-        if (
-          !Number.isFinite(oldINR) ||
-          oldINR < 0
-        ) {
-          return;
-        }
-
-        // Reduce INR by 70%.
-        const reducedINR =
-          oldINR * PRICE_REMAINING_PERCENT;
-
-        const finalINR = Math.min(
-          roundPrice(reducedINR),
-          MAX_PRODUCT_PRICE_INR
-        );
-
-        wasCappedINR =
-          reducedINR > MAX_PRODUCT_PRICE_INR;
-
-        current.price = finalINR;
-
-        // Keep originalPrice consistent with the reduced price.
-        current.originalPrice = finalINR;
-
-        // Reduce USD price by 70%, when present.
-        if (
-          Object.prototype.hasOwnProperty.call(
-            current,
-            "originalPriceUSD"
-          )
-        ) {
-          const oldUSD = Number(
-            current.originalPriceUSD
-          );
-
-          if (
-            Number.isFinite(oldUSD) &&
-            oldUSD >= 0
-          ) {
-            const reducedUSD =
-              oldUSD * PRICE_REMAINING_PERCENT;
-
-            const finalUSD = Math.min(
-              roundPrice(reducedUSD),
-              roundPrice(MAX_PRODUCT_PRICE_USD)
-            );
-
-            wasCappedUSD =
-              reducedUSD > MAX_PRODUCT_PRICE_USD;
-
-            current.originalPriceUSD = finalUSD;
-          }
-        }
-
-        // Save permanent marker.
-        current[PRICE_REDUCTION_MARKER] = true;
-
-        current.priceReduction70Percent = 70;
-
-        current.priceReduction70At = Date.now();
-
-        current.updatedAt = Date.now();
-
-        return current;
-      },
-      undefined,
-      false
+  if (await isPriceReductionActive(db)) {
+    throw new HttpError(
+      409,
+      "Prices are already reduced. Restore them first."
     );
-
-    if (result.committed) {
-      summary.updatedProducts++;
-
-      summary.categories[category].updated++;
-
-      if (wasCappedINR) {
-        summary.cappedINRProducts++;
-      }
-
-      if (wasCappedUSD) {
-        summary.cappedUSDProducts++;
-      }
-    } else {
-      const finalProduct = result.snapshot.val();
-
-      if (
-        finalProduct &&
-        finalProduct[PRICE_REDUCTION_MARKER] === true
-      ) {
-        summary.alreadyReduced++;
-      } else {
-        summary.skippedProducts++;
-
-        summary.categories[category].skipped++;
-      }
-    }
   }
 
-  summary.completedAt = Date.now();
+  const snap = await db.ref("products").once("value");
+  const raw = snap.val() || {};
+
+  const updates = {};
+  const summary = {
+    mode: "reduced",
+    totalProducts: 0,
+    updatedProducts: 0,
+    skippedProducts: 0,
+    cappedINRProducts: 0,
+    cappedUSDProducts: 0
+  };
+
+  const now = Date.now();
+
+  Object.keys(raw).forEach(id => {
+    const p = raw[id];
+
+    if (!p || typeof p !== "object") return;
+
+    summary.totalProducts++;
+
+    const oldINR = Number(p.price);
+
+    if (!Number.isFinite(oldINR) || oldINR < 0) {
+      summary.skippedProducts++;
+      return;
+    }
+
+    const reducedINR = oldINR * PRICE_REMAINING;
+    const finalINR = Math.min(roundPrice(reducedINR), MAX_PRODUCT_PRICE_INR);
+
+    if (reducedINR > MAX_PRODUCT_PRICE_INR) summary.cappedINRProducts++;
+
+    const backup = {
+      price: p.price,
+      originalPrice: p.originalPrice == null ? null : p.originalPrice,
+      hadUSD: false,
+      originalPriceUSD: null,
+      reducedPrice: finalINR,
+      at: now
+    };
+
+    updates["products/" + id + "/price"] = finalINR;
+    updates["products/" + id + "/originalPrice"] = finalINR;
+
+    const oldUSD = Number(p.originalPriceUSD);
+
+    if (
+      p.originalPriceUSD != null &&
+      Number.isFinite(oldUSD) &&
+      oldUSD >= 0
+    ) {
+      const reducedUSD = oldUSD * PRICE_REMAINING;
+      const finalUSD = Math.min(
+        roundPrice(reducedUSD),
+        roundPrice(MAX_PRODUCT_PRICE_USD)
+      );
+
+      if (reducedUSD > MAX_PRODUCT_PRICE_USD) summary.cappedUSDProducts++;
+
+      backup.hadUSD = true;
+      backup.originalPriceUSD = p.originalPriceUSD;
+
+      updates["products/" + id + "/originalPriceUSD"] = finalUSD;
+    }
+
+    // Remove visible markers written by any older version.
+    LEGACY_MARKER_FIELDS.forEach(f => {
+      if (Object.prototype.hasOwnProperty.call(p, f)) {
+        updates["products/" + id + "/" + f] = null;
+      }
+    });
+
+    updates[PRICE_BACKUP_PATH + "/" + id] = backup;
+
+    summary.updatedProducts++;
+  });
+
+  updates[PRICE_STATE_PATH] = { active: true, at: now };
+
+  // One atomic write: all products + backup + state together.
+  await db.ref().update(updates);
+
+  return summary;
+}
+
+async function restoreAllProductPrices(db) {
+  const [backupSnap, productsSnap] = await Promise.all([
+    db.ref(PRICE_BACKUP_PATH).once("value"),
+    db.ref("products").once("value")
+  ]);
+
+  const backups = backupSnap.val() || {};
+  const products = productsSnap.val() || {};
+
+  const updates = {};
+  const summary = {
+    mode: "restored",
+    totalProducts: Object.keys(backups).length,
+    updatedProducts: 0,
+    skippedProducts: 0
+  };
+
+  Object.keys(backups).forEach(id => {
+    const b = backups[id];
+    const p = products[id];
+
+    // Always clear the backup entry.
+    updates[PRICE_BACKUP_PATH + "/" + id] = null;
+
+    if (!b || !p || typeof p !== "object") {
+      summary.skippedProducts++;
+      return;
+    }
+
+    // If the price was edited after the reduction, keep the edit.
+    if (Number(p.price) !== Number(b.reducedPrice)) {
+      summary.skippedProducts++;
+      return;
+    }
+
+    updates["products/" + id + "/price"] = b.price;
+    updates["products/" + id + "/originalPrice"] =
+      b.originalPrice == null ? b.price : b.originalPrice;
+
+    if (b.hadUSD) {
+      updates["products/" + id + "/originalPriceUSD"] = b.originalPriceUSD;
+    }
+
+    summary.updatedProducts++;
+  });
+
+  updates[PRICE_STATE_PATH] = null;
+
+  await db.ref().update(updates);
 
   return summary;
 }
@@ -680,39 +521,21 @@ function cleanDiscount(input) {
     throw new HttpError(400, "Discount data is missing.");
   }
 
-  const scope =
-    input.scope === "user"
-      ? "user"
-      : "all";
+  const scope = input.scope === "user" ? "user" : "all";
 
   const percent = Number(input.percent);
 
-  if (
-    !Number.isFinite(percent) ||
-    percent <= 0 ||
-    percent > 100
-  ) {
-    throw new HttpError(
-      400,
-      "Discount must be between 0 and 100%."
-    );
+  if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+    throw new HttpError(400, "Discount must be between 0 and 100%.");
   }
 
   let userEmail = "";
 
   if (scope === "user") {
-    userEmail = str(
-      input.userEmail,
-      254,
-      "Customer email",
-      true
-    ).toLowerCase();
+    userEmail = str(input.userEmail, 254, "Customer email", true).toLowerCase();
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
-      throw new HttpError(
-        400,
-        "Enter a valid customer email."
-      );
+      throw new HttpError(400, "Enter a valid customer email.");
     }
   }
 
@@ -752,18 +575,12 @@ async function listDiscounts(db) {
 
   return rows
     .filter(Boolean)
-    .sort(
-      (a, b) =>
-        (Number(b.createdAt) || 0) -
-        (Number(a.createdAt) || 0)
-    );
+    .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
 }
 
 async function handleDiscounts(db, method, body) {
   if (method === "GET") {
-    return {
-      discounts: await listDiscounts(db)
-    };
+    return { discounts: await listDiscounts(db) };
   }
 
   const action = String(body.action || "");
@@ -781,45 +598,45 @@ async function handleDiscounts(db, method, body) {
     const id = String(body.id || "");
 
     if (!id || /[.#$\[\]\/]/.test(id)) {
-      throw new HttpError(
-        400,
-        "A valid discount ID is required."
-      );
+      throw new HttpError(400, "A valid discount ID is required.");
     }
 
     await ref.child(id).remove();
   } else {
-    throw new HttpError(
-      400,
-      "Unknown action. Use add or remove."
-    );
+    throw new HttpError(400, "Unknown action. Use add or remove.");
   }
 
-  return {
-    discounts: await listDiscounts(db)
-  };
+  return { discounts: await listDiscounts(db) };
 }
 
 /* ---------------- Products ---------------- */
 
 async function handleProducts(db, method, body) {
   if (method === "GET") {
-    return {
-      products: await listProducts(db)
-    };
+    // Plain read. No price changes happen here.
+    return productsPayload(db);
   }
 
   const action = String(body.action || "");
 
-  // NEW: Reduce all existing product prices by 70%.
-  if (action === "reduceAllPrices") {
-    const priceReduction =
-      await reduceAllProductPrices(db);
+  if (
+    action === "togglePrices" ||
+    action === "reduceAllPrices" ||
+    action === "restoreAllPrices"
+  ) {
+    let priceChange;
 
-    return {
-      priceReduction,
-      products: await listProducts(db)
-    };
+    if (action === "reduceAllPrices") {
+      priceChange = await reduceAllProductPrices(db);
+    } else if (action === "restoreAllPrices") {
+      priceChange = await restoreAllProductPrices(db);
+    } else {
+      priceChange = (await isPriceReductionActive(db))
+        ? await restoreAllProductPrices(db)
+        : await reduceAllProductPrices(db);
+    }
+
+    return productsPayload(db, { priceChange });
   }
 
   if (action === "add") {
@@ -827,14 +644,7 @@ async function handleProducts(db, method, body) {
 
     let id = generateProductId();
 
-    while (
-      (
-        await db
-          .ref("products")
-          .child(id)
-          .once("value")
-      ).exists()
-    ) {
+    while ((await db.ref("products").child(id).once("value")).exists()) {
       id = generateProductId();
     }
 
@@ -847,24 +657,17 @@ async function handleProducts(db, method, body) {
         updatedAt: now
       })
     );
-
   } else if (action === "update") {
     const id = String(body.id || "");
 
     if (!PRODUCT_ID_PATTERN.test(id)) {
-      throw new HttpError(
-        400,
-        "A valid product ID is required."
-      );
+      throw new HttpError(400, "A valid product ID is required.");
     }
 
     const ref = db.ref("products").child(id);
 
     if (!(await ref.once("value")).exists()) {
-      throw new HttpError(
-        404,
-        "Product not found."
-      );
+      throw new HttpError(404, "Product not found.");
     }
 
     const clean = cleanProduct(body);
@@ -877,32 +680,28 @@ async function handleProducts(db, method, body) {
         updatedAt: Date.now()
       })
     );
-
   } else if (action === "remove") {
     const id = String(body.id || "");
 
     if (!PRODUCT_ID_PATTERN.test(id)) {
-      throw new HttpError(
-        400,
-        "A valid product ID is required."
-      );
+      throw new HttpError(400, "A valid product ID is required.");
     }
 
     await db.ref("products").child(id).remove();
 
+    // Drop any saved original price for this product.
+    await db.ref(PRICE_BACKUP_PATH).child(id).remove();
+
     // Prevent deleted products from being imported again.
     await db.ref("removedProducts").child(id).set(true);
-
   } else {
     throw new HttpError(
       400,
-      "Unknown action. Use add, update, remove or reduceAllPrices."
+      "Unknown action. Use add, update, remove or togglePrices."
     );
   }
 
-  return {
-    products: await listProducts(db)
-  };
+  return productsPayload(db);
 }
 
 /* ---------------- Main Handler ---------------- */
@@ -915,23 +714,14 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const resource = String(
-      (req.query && req.query.resource) || "products"
-    );
+    const resource = String((req.query && req.query.resource) || "products");
 
-    if (
-      resource !== "products" &&
-      resource !== "discounts"
-    ) {
-      throw new HttpError(
-        400,
-        "Unknown resource. Use products or discounts."
-      );
+    if (resource !== "products" && resource !== "discounts") {
+      throw new HttpError(400, "Unknown resource. Use products or discounts.");
     }
 
     const publicDiscountRead =
-      req.method === "GET" &&
-      resource === "discounts";
+      req.method === "GET" && resource === "discounts";
 
     const authorized = isAuthorized(req);
 
@@ -947,9 +737,9 @@ module.exports = async function handler(req, res) {
     if (publicDiscountRead && !authorized) {
       const db = initializeFirebase();
 
-      const email = String(
-        (req.query && req.query.email) || ""
-      ).trim().toLowerCase();
+      const email = String((req.query && req.query.email) || "")
+        .trim()
+        .toLowerCase();
 
       const all = await listDiscounts(db);
 
@@ -970,9 +760,7 @@ module.exports = async function handler(req, res) {
           return (
             scope === "user" &&
             email !== "" &&
-            String(d.userEmail || "")
-              .trim()
-              .toLowerCase() === email
+            String(d.userEmail || "").trim().toLowerCase() === email
           );
         })
         .map(d => ({
@@ -989,10 +777,7 @@ module.exports = async function handler(req, res) {
     }
 
     if (!["GET", "PUT", "POST"].includes(req.method)) {
-      res.setHeader(
-        "Allow",
-        "GET, PUT, POST, OPTIONS"
-      );
+      res.setHeader("Allow", "GET, PUT, POST, OPTIONS");
 
       return res.status(405).json({
         success: false,
@@ -1010,36 +795,21 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    if (
-      req.method !== "GET" &&
-      (!body || typeof body !== "object")
-    ) {
-      throw new HttpError(
-        400,
-        "Invalid request body."
-      );
+    if (req.method !== "GET" && (!body || typeof body !== "object")) {
+      throw new HttpError(400, "Invalid request body.");
     }
 
     const db = initializeFirebase();
 
     const result =
       resource === "discounts"
-        ? await handleDiscounts(
-            db,
-            req.method,
-            body || {}
-          )
-        : await handleProducts(
-            db,
-            req.method,
-            body || {}
-          );
+        ? await handleDiscounts(db, req.method, body || {})
+        : await handleProducts(db, req.method, body || {});
 
     return res.status(200).json({
       success: true,
       ...result
     });
-
   } catch (error) {
     if (error instanceof HttpError) {
       return res.status(error.status).json({
@@ -1048,20 +818,13 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    console.error(
-      "Admin productData API error:",
-      error
-    );
+    console.error("Admin productData API error:", error);
 
     return res.status(500).json({
       success: false,
       message:
         "Server error: " +
-        (
-          error && error.message
-            ? error.message
-            : "unknown"
-        )
+        (error && error.message ? error.message : "unknown")
     });
   }
 };
