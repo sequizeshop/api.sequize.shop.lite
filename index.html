@@ -306,7 +306,7 @@ tbody tr:hover{background:var(--surface2)}
               <select id="pfCatSelect" aria-label="Category"></select>
               <button type="button" class="icon-btn" id="catNext" aria-label="Next category"><i class="ph ph-caret-right"></i></button>
             </div>
-            <div class="form-hint">Category badalne par brand, SKU, stock, tags, weight, size, warranty, shipping aur return policy khud bhar jaate hain. Aapko sirf title, description, price aur images daalni hain.</div>
+            <div class="form-hint">Category badalne par brand, SKU, stock, tags, weight, size, warranty, shipping, return policy aur product information (processor, RAM, fabric wagairah) khud bhar jaate hain. Aapko sirf title, description, price aur images daalni hain.</div>
           </div>
           <div class="form-group"><label for="pfTitle">Product name *</label><input id="pfTitle" maxlength="200" required></div>
           <div class="form-group"><label for="pfDescription">Description</label><textarea id="pfDescription" maxlength="5000" style="min-height:90px"></textarea></div>
@@ -341,6 +341,17 @@ tbody tr:hover{background:var(--surface2)}
           <div class="form-group"><label for="pfWarranty">Warranty information</label><input id="pfWarranty" maxlength="300"></div>
           <div class="form-group"><label for="pfShipping">Shipping information</label><input id="pfShipping" maxlength="300"></div>
           <div class="form-group"><label for="pfReturn">Return policy</label><input id="pfReturn" maxlength="300"></div>
+          <div class="form-group">
+            <label>Product information (category ke hisaab se)</label>
+            <div class="cat-bar">
+              <button type="button" class="icon-btn" id="specPrev" aria-label="Previous information set"><i class="ph ph-caret-left"></i></button>
+              <div id="specCounter" style="flex:1;text-align:center;font-size:12px;color:var(--muted)"></div>
+              <button type="button" class="icon-btn" id="specNext" aria-label="Next information set"><i class="ph ph-caret-right"></i></button>
+            </div>
+            <div id="pfSpecList" style="margin-top:10px"></div>
+            <button type="button" class="btn btn-small" id="pfAddSpec"><i class="ph ph-plus"></i> Add field</button>
+            <div class="form-hint">Is category ke 15 alag information sets hain. Next / Previous se badlo, ya kisi bhi value ko khud edit karo. Ye product page par "Product Information" me sabse upar dikhegi.</div>
+          </div>
           <div class="form-group"><label for="pfReviews">Reviews (one per line)</label><textarea id="pfReviews" style="min-height:90px" placeholder="rating | name | email | date | comment"></textarea><div class="form-hint">Format: rating | reviewer name | reviewer email | date | comment</div></div>
           <div class="form-footer"><button class="btn" type="button" id="prodCancelEdit" hidden>Cancel edit</button><button class="btn btn-primary" type="submit" id="prodSubmit"><i class="ph ph-plus"></i> Add product</button></div>
         </form>
@@ -1231,6 +1242,7 @@ function applyPreset(){
   set("pfStock",CAT_BASE.stock);set("pfAvail",CAT_BASE.avail);set("pfMinQty",CAT_BASE.minQty);
   set("pfTags",c[1]);set("pfWeight",c[2]);set("pfDimW",c[3]);set("pfDimH",c[4]);set("pfDimD",c[5]);
   set("pfWarranty",c[6]);set("pfReturn",c[7]);set("pfShipping",CAT_BASE.ship);
+  loadSpecPreset(true);
 }
 function stepCat(d){catIdx=(catIdx+d+CATS.length)%CATS.length;applyPreset()}
 $("catPrev").addEventListener("click",()=>stepCat(-1));
@@ -1251,6 +1263,331 @@ function addImageField(v){
 function setImageFields(a){$("pfImageList").innerHTML="";(a&&a.length?a:["","",""]).forEach(addImageField)}
 function getImageValues(){return [].slice.call(document.querySelectorAll(".pf-img")).map(i=>i.value.trim()).filter(Boolean)}
 $("pfAddImage").addEventListener("click",()=>addImageField(""));
+
+/* ---- Category-wise product information (specifications) ----
+   Each field: [label, [values low->high or random], 1 = tiered (values rise together)]
+   Avoid "-", ".", "/" in labels (product page humanizes "-" and Firebase rejects "./#$[]"). */
+
+const COL=["Black","White","Blue","Red","Grey","Green","Navy Blue","Maroon","Beige","Silver","Gold","Pink"];
+
+const SPEC_DEFS={
+smartphones:[
+["Processor",["Snapdragon 680","Helio G99","Snapdragon 7s Gen 2","Dimensity 7200","Snapdragon 8s Gen 3","Snapdragon 8 Gen 3"],1],
+["RAM",["4 GB","6 GB","8 GB","12 GB","16 GB"],1],
+["Storage",["64 GB","128 GB","256 GB","512 GB","1 TB"],1],
+["Display",["6.1 inch HD+ LCD","6.5 inch FHD+ IPS","6.6 inch FHD+ AMOLED","6.7 inch AMOLED 120Hz","6.8 inch LTPO AMOLED 120Hz"],1],
+["Rear Camera",["13 MP + 2 MP","50 MP + 2 MP","50 MP + 8 MP + 2 MP","50 MP + 12 MP + 8 MP","50 MP + 50 MP + 12 MP","200 MP + 50 MP + 12 MP"],1],
+["Front Camera",["5 MP","8 MP","16 MP","32 MP","50 MP"],1],
+["Battery",["4000 mAh","5000 mAh","5000 mAh","5500 mAh","6000 mAh"],1],
+["Charging Speed",["10W","18W","33W","45W","67W","100W"],1],
+["Operating System",["Android 13","Android 14","Android 15"]],
+["Connectivity",["4G LTE, Wi Fi 5, Bluetooth 5.0","5G, Wi Fi 6, Bluetooth 5.2","5G, Wi Fi 6E, Bluetooth 5.3"],1],
+["SIM",["Dual SIM (Nano)","Dual SIM + eSIM"]],
+["Colour",COL]],
+laptops:[
+["Processor",["Intel Core i3 1215U","AMD Ryzen 3 7320U","Intel Core i5 1235U","AMD Ryzen 5 7530U","Intel Core i5 13420H","AMD Ryzen 7 7840HS","Intel Core i7 13700H","Intel Core i9 13900H"],1],
+["RAM",["4 GB DDR4","8 GB DDR4","16 GB DDR4","16 GB DDR5","32 GB DDR5"],1],
+["Storage",["256 GB SSD","512 GB SSD","512 GB SSD","1 TB SSD","2 TB SSD"],1],
+["Display",["14 inch HD","14 inch FHD IPS","15.6 inch FHD IPS","15.6 inch FHD 144Hz","16 inch QHD+ 165Hz"],1],
+["Graphics",["Intel UHD Graphics","Intel Iris Xe","AMD Radeon Graphics","NVIDIA GeForce RTX 3050","NVIDIA GeForce RTX 4060","NVIDIA GeForce RTX 4070"],1],
+["Operating System",["Windows 11 Home","Windows 11 Pro","Windows 10 Home","Ubuntu Linux","DOS (no OS)"]],
+["Battery",["38 Wh","42 Wh","50 Wh","56 Wh","70 Wh","90 Wh"],1],
+["Keyboard",["Standard","Backlit","Backlit with Numpad","RGB Backlit"],1],
+["Ports",["2 x USB A, 1 x HDMI, 1 x USB C","3 x USB A, 1 x HDMI, 1 x USB C, SD Card","2 x USB A, 2 x USB C (Thunderbolt), 1 x HDMI"],1],
+["Colour",["Silver","Space Grey","Black","Blue","Platinum"]]],
+tablets:[
+["Processor",["Helio G80","Snapdragon 680","Snapdragon 7 Gen 1","Snapdragon 8 Gen 2","Apple A15","Apple M2"],1],
+["RAM",["3 GB","4 GB","6 GB","8 GB","12 GB"],1],
+["Storage",["32 GB","64 GB","128 GB","256 GB","512 GB"],1],
+["Display",["8 inch HD","10.1 inch FHD","10.4 inch 2K","11 inch 2K 120Hz","12.4 inch AMOLED 120Hz"],1],
+["Battery",["5100 mAh","6000 mAh","7040 mAh","8000 mAh","10090 mAh"],1],
+["Connectivity",["Wi Fi only","Wi Fi + 4G","Wi Fi + 5G"],1],
+["Operating System",["Android 13","Android 14","iPadOS 17"]],
+["Rear Camera",["5 MP","8 MP","8 MP","13 MP","13 MP + 8 MP"],1],
+["Stylus Support",["No","Optional","Yes"],1],
+["Colour",["Grey","Silver","Space Grey","Blue","Green"]]],
+"mobile-accessories":[
+["Compatible With",["All Android phones","All iPhones","Universal (USB C)","Samsung Galaxy series","iPhone 13 to 16 series"]],
+["Connector Type",["USB C","Lightning","Micro USB","USB A to C","Wireless (Qi)"]],
+["Max Output",["5W","10W","20W","30W","45W","65W"],1],
+["Material",["ABS Plastic","Silicone","Braided Nylon","Aluminium Alloy","Tempered Glass","TPU"]],
+["Cable Length",["0.5 meter","1 meter","1.5 meter","2 meter"]],
+["Pack Contents",["1 piece","1 piece + user manual","Pack of 2","Pack of 3"]],
+["Certification",["BIS Certified","CE and RoHS","BIS and CE"]],
+["Colour",COL]],
+"mens-shirts":[
+["Fabric",["100% Cotton","Cotton Blend","Linen","Polyester","Cotton Poplin","Oxford Cotton"]],
+["Fabric Weight",["120 GSM","140 GSM","160 GSM","180 GSM"],1],
+["Fabric Used",["1.5 meter","1.8 meter","2.0 meter","2.25 meter"],1],
+["Fit",["Slim Fit","Regular Fit","Relaxed Fit"]],
+["Sleeve",["Full Sleeve","Half Sleeve"]],
+["Collar",["Spread Collar","Button Down","Mandarin Collar","Cutaway"]],
+["Pattern",["Solid","Checked","Striped","Printed"]],
+["Sizes Available",["S, M, L, XL","M, L, XL, XXL","S, M, L, XL, XXL"]],
+["Occasion",["Casual","Formal","Party","Daily Wear"]],
+["Wash Care",["Machine wash cold","Hand wash only","Do not bleach, machine wash","Dry clean only"]],
+["Colour",COL]],
+tops:[
+["Fabric",["100% Cotton","Rayon","Georgette","Crepe","Polyester Blend","Cotton Linen"]],
+["Fabric Weight",["100 GSM","120 GSM","140 GSM","160 GSM"],1],
+["Fabric Used",["1.0 meter","1.2 meter","1.5 meter","1.8 meter"],1],
+["Fit",["Regular Fit","Relaxed Fit","Slim Fit","Oversized"]],
+["Neck",["Round Neck","V Neck","Square Neck","Boat Neck","Collar"]],
+["Sleeve",["Sleeveless","Short Sleeve","Three Quarter Sleeve","Full Sleeve"]],
+["Pattern",["Solid","Floral Print","Striped","Embroidered","Printed"]],
+["Sizes Available",["XS, S, M, L","S, M, L, XL","S, M, L, XL, XXL"]],
+["Wash Care",["Machine wash cold","Hand wash only","Gentle machine wash"]],
+["Colour",COL]],
+"womens-dresses":[
+["Fabric",["Cotton","Georgette","Crepe","Rayon","Satin","Silk Blend","Chiffon"]],
+["Fabric Used",["2.0 meter","2.5 meter","3.0 meter","3.5 meter","4.0 meter"],1],
+["Dress Type",["A Line","Maxi","Anarkali","Bodycon","Fit and Flare","Kurta Set"]],
+["Length",["Knee Length","Midi","Ankle Length","Floor Length"],1],
+["Sleeve",["Sleeveless","Short Sleeve","Three Quarter Sleeve","Full Sleeve"]],
+["Neck",["Round Neck","V Neck","Square Neck","Boat Neck"]],
+["Pattern",["Solid","Floral Print","Embroidered","Printed","Bandhani"]],
+["Sizes Available",["XS, S, M, L","S, M, L, XL","S, M, L, XL, XXL"]],
+["Lining",["Yes","No"]],
+["Wash Care",["Hand wash only","Gentle machine wash","Dry clean only"]],
+["Occasion",["Casual","Party","Festive","Wedding","Office"]],
+["Colour",COL]],
+"mens-shoes":[
+["Type",["Sneakers","Running Shoes","Formal Shoes","Loafers","Sandals","Boots"]],
+["Upper Material",["Mesh","Synthetic Leather","Genuine Leather","Canvas","Suede","Knit"]],
+["Sole Material",["EVA","Rubber","PU","TPR","Phylon"]],
+["Closure",["Lace Up","Slip On","Velcro","Buckle"]],
+["Sizes Available (UK)",["6, 7, 8, 9, 10","7, 8, 9, 10, 11","6 to 11"]],
+["Fit",["Regular","Wide","Narrow"]],
+["Weight Per Pair",["600 g","700 g","800 g","900 g","1000 g"],1],
+["Occasion",["Casual","Sports","Formal","Party","Outdoor"]],
+["Wash Care",["Wipe with damp cloth","Hand wash","Do not machine wash"]],
+["Colour",COL]],
+"womens-shoes":[
+["Type",["Sandals","Heels","Flats","Sneakers","Wedges","Ballerinas"]],
+["Upper Material",["Synthetic Leather","Genuine Leather","Fabric","Mesh","Suede"]],
+["Sole Material",["EVA","Rubber","PU","TPR"]],
+["Heel Type",["Flat","Block Heel","Stiletto","Wedge","Platform"]],
+["Heel Height",["0.5 inch","1 inch","2 inch","3 inch","4 inch"],1],
+["Closure",["Slip On","Buckle","Lace Up","Velcro","Ankle Strap"]],
+["Sizes Available (UK)",["3, 4, 5, 6, 7","4, 5, 6, 7, 8","3 to 8"]],
+["Occasion",["Casual","Party","Formal","Wedding","Daily Wear"]],
+["Wash Care",["Wipe with damp cloth","Hand wash","Do not machine wash"]],
+["Colour",COL]],
+"mens-watches":[
+["Display Type",["Analog","Digital","Analog Digital","Smart"]],
+["Movement",["Quartz","Automatic","Solar","Smart (Bluetooth)"]],
+["Case Material",["Stainless Steel","Alloy","Titanium","Resin","Brass"]],
+["Case Diameter",["38 mm","40 mm","42 mm","44 mm","46 mm"],1],
+["Strap Material",["Leather","Stainless Steel","Silicone","Nylon","Mesh"]],
+["Glass",["Mineral Glass","Hardened Mineral Glass","Sapphire Crystal"],1],
+["Water Resistance",["30 meter","50 meter","100 meter","200 meter"],1],
+["Battery Life",["2 years","3 years","5 years","7 days","10 days"]],
+["Dial Colour",COL]],
+"womens-watches":[
+["Display Type",["Analog","Digital","Analog Digital","Smart"]],
+["Movement",["Quartz","Solar","Smart (Bluetooth)"]],
+["Case Material",["Stainless Steel","Alloy","Rose Gold Plated","Resin","Brass"]],
+["Case Diameter",["26 mm","28 mm","30 mm","32 mm","36 mm"],1],
+["Strap Material",["Leather","Stainless Steel","Silicone","Mesh","Ceramic"]],
+["Glass",["Mineral Glass","Hardened Mineral Glass","Sapphire Crystal"],1],
+["Water Resistance",["30 meter","50 meter","100 meter"],1],
+["Battery Life",["2 years","3 years","5 years","7 days"]],
+["Dial Colour",COL]],
+sunglasses:[
+["Frame Shape",["Aviator","Wayfarer","Round","Square","Cat Eye","Oversized"]],
+["Frame Material",["Plastic","Metal","TR90","Acetate","Aluminium"]],
+["Lens Material",["Polycarbonate","Glass","CR39","Nylon"]],
+["Lens Colour",["Black","Brown","Green","Blue Mirror","Gradient Grey"]],
+["UV Protection",["UV400","UV400 + Polarized"],1],
+["Lens Width",["50 mm","52 mm","54 mm","56 mm","58 mm"],1],
+["Fit",["Medium","Large","Small"]],
+["Pack Contents",["Sunglasses + pouch","Sunglasses + hard case + cloth"]],
+["Gender",["Men","Women","Unisex"]]],
+"womens-bags":[
+["Bag Type",["Handbag","Sling Bag","Tote Bag","Backpack","Clutch","Shoulder Bag"]],
+["Material",["PU Leather","Genuine Leather","Canvas","Nylon","Jute"]],
+["Capacity",["5 litre","8 litre","12 litre","18 litre","25 litre"],1],
+["Compartments",["1 main compartment","2 compartments","3 compartments + zip pocket"],1],
+["Closure",["Zip","Magnetic Snap","Flap with Lock","Drawstring"]],
+["Strap Type",["Detachable Strap","Fixed Handle","Adjustable Strap","Double Handle"]],
+["Lining",["Polyester","Cotton","Satin"]],
+["Wash Care",["Wipe with damp cloth","Spot clean only"]],
+["Colour",COL]],
+"womens-jewellery":[
+["Jewellery Type",["Necklace","Earrings","Bracelet","Ring","Bangles","Anklet"]],
+["Material",["Brass","Alloy","925 Sterling Silver","Stainless Steel","Copper"]],
+["Plating",["Gold Plated","Rose Gold Plated","Silver Plated","Oxidised","Rhodium Plated"]],
+["Stone",["Cubic Zirconia","American Diamond","Pearl","Kundan","No Stone"]],
+["Size",["Free Size","Adjustable","2.4 inch","2.6 inch","16 inch"]],
+["Closure",["Hook","Lobster Clasp","Screw Back","Push Back","Adjustable"]],
+["Weight Of Item",["5 g","10 g","15 g","25 g","40 g"],1],
+["Care",["Keep away from water and perfume","Store in airtight box","Wipe with soft dry cloth"]],
+["Occasion",["Daily Wear","Party","Festive","Wedding"]]],
+beauty:[
+["Product Type",["Lipstick","Mascara","Foundation","Eyeliner","Compact Powder","Kajal","Blush","Nail Polish"]],
+["Finish",["Matte","Glossy","Satin","Dewy","Natural"]],
+["Shade",["Nude","Rose Pink","Berry","Coral","Classic Red","Mocha"]],
+["Net Quantity",["3 g","5 g","8 ml","15 ml","30 ml"],1],
+["Skin Type",["All skin types","Oily skin","Dry skin","Combination skin"]],
+["Key Ingredients",["Vitamin E, Shea Butter","Jojoba Oil, Aloe Vera","Hyaluronic Acid","Almond Oil, Beeswax"]],
+["Shelf Life",["12 months","18 months","24 months","36 months"],1],
+["Cruelty Free",["Yes","No"]],
+["Country of Origin",["India","France","USA","South Korea"]]],
+"skin-care":[
+["Skin Type",["All skin types","Oily skin","Dry skin","Sensitive skin","Combination skin"]],
+["Concern",["Hydration","Acne Control","Anti Ageing","Brightening","Sun Protection","Dark Spots"]],
+["Key Ingredients",["Hyaluronic Acid","Vitamin C","Niacinamide","Salicylic Acid","Retinol","Aloe Vera"]],
+["Texture",["Gel","Cream","Lotion","Serum","Foam"]],
+["Net Quantity",["30 ml","50 ml","100 ml","150 ml","200 ml"],1],
+["SPF",["No SPF","SPF 30","SPF 50"]],
+["Usage",["Morning and night","Night only","Morning only","Twice daily"]],
+["Dermatologically Tested",["Yes"]],
+["Shelf Life",["12 months","18 months","24 months","36 months"],1]],
+fragrances:[
+["Fragrance Family",["Woody","Floral","Fresh Citrus","Oriental","Aquatic","Fruity","Musk"]],
+["Top Notes",["Bergamot, Lemon","Apple, Pineapple","Lavender, Mint","Orange Blossom","Pink Pepper"]],
+["Base Notes",["Sandalwood, Musk","Amber, Vanilla","Cedar, Patchouli","Oud","Vetiver"]],
+["Concentration",["Eau de Cologne","Eau de Toilette","Eau de Parfum","Parfum"],1],
+["Volume",["30 ml","50 ml","100 ml","150 ml","200 ml"],1],
+["Longevity",["2 to 3 hours","4 to 5 hours","6 to 8 hours","8 to 10 hours"],1],
+["Gender",["Men","Women","Unisex"]],
+["Occasion",["Daily Wear","Office","Party","Evening"]]],
+furniture:[
+["Furniture Type",["Sofa","Bed","Dining Table","Wardrobe","Office Chair","Bookshelf","TV Unit"]],
+["Material",["Sheesham Wood","Engineered Wood","Solid Pine","Metal Frame","Teak Wood"]],
+["Finish",["Walnut","Natural Wood","Matte White","Espresso","Teak"]],
+["Weight Capacity",["80 kg","100 kg","150 kg","200 kg","300 kg"],1],
+["Assembly",["DIY Assembly","Carpenter Assembly Free","Pre assembled"]],
+["Seating or Storage Capacity",["1 seater","2 seater","3 seater","4 shelves","6 shelves"],1],
+["Style",["Modern","Contemporary","Classic","Scandinavian","Industrial"]],
+["Room Type",["Living Room","Bedroom","Dining Room","Office","Kids Room"]],
+["Colour",["Brown","Walnut","White","Black","Natural","Grey"]]],
+groceries:[
+["Pack Size",["250 g","500 g","1 kg","2 kg","5 kg"],1],
+["Type",["Organic","Regular","Premium","Farm Fresh"]],
+["Shelf Life",["3 months","6 months","9 months","12 months"],1],
+["Storage",["Store in a cool dry place","Refrigerate after opening","Keep airtight"]],
+["Dietary Preference",["Vegetarian","Vegan","Gluten Free","Vegetarian (Green Dot)"]],
+["FSSAI Licensed",["Yes"]],
+["Country of Origin",["India"]],
+["Packaging",["Pouch","Jar","Box","Tin","Sealed Pack"]]],
+"home-decoration":[
+["Item Type",["Wall Art","Table Lamp","Vase","Photo Frame","Wall Clock","Showpiece","Candle Holder"]],
+["Material",["Ceramic","Wood","Metal","Glass","Resin","Terracotta"]],
+["Finish",["Matte","Glossy","Antique","Hand Painted","Brushed Gold"]],
+["Style",["Modern","Boho","Traditional","Minimalist","Rustic"]],
+["Size",["Small","Medium","Large","Extra Large"],1],
+["Room Type",["Living Room","Bedroom","Dining Room","Entrance","Study"]],
+["Power Source",["Not required","Battery operated","Plug in (AC)"]],
+["Colour",COL]],
+"kitchen-accessories":[
+["Item Type",["Cookware Set","Knife Set","Pressure Cooker","Tawa","Storage Containers","Mixer Grinder"]],
+["Material",["Stainless Steel","Aluminium","Non Stick Coated","Cast Iron","Borosilicate Glass","BPA Free Plastic"]],
+["Capacity",["500 ml","1 litre","2 litre","3 litre","5 litre"],1],
+["Compatible With",["Gas Stove","Gas + Induction","Induction only","All cooktops"]],
+["Dishwasher Safe",["Yes","No"]],
+["Pack Contents",["1 piece","Set of 3","Set of 5","Set of 7"],1],
+["Handle",["Bakelite","Stainless Steel","Silicone Grip","Wooden"]],
+["Colour",["Silver","Black","Red","Grey","Copper"]]],
+"sports-accessories":[
+["Sport",["Cricket","Football","Badminton","Gym and Fitness","Yoga","Cycling","Running"]],
+["Item Type",["Gloves","Bottle","Resistance Band","Skipping Rope","Yoga Mat","Dumbbell Set","Backpack"]],
+["Material",["Neoprene","Rubber","PVC","Polyester","Stainless Steel","TPE"]],
+["Size",["Small","Medium","Large","Free Size","Adjustable"]],
+["Weight",["100 g","250 g","500 g","1 kg","2 kg"],1],
+["Suitable For",["Beginners","Intermediate","Professionals","All levels"]],
+["Water Resistant",["Yes","No"]],
+["Colour",COL]],
+motorcycle:[
+["Engine Capacity",["110 cc","125 cc","150 cc","200 cc","350 cc","650 cc"],1],
+["Max Power",["8 bhp","10 bhp","13 bhp","18 bhp","20 bhp","47 bhp"],1],
+["Max Torque",["9 Nm","11 Nm","13 Nm","17 Nm","27 Nm","52 Nm"],1],
+["Mileage",["70 kmpl","60 kmpl","50 kmpl","40 kmpl","30 kmpl","25 kmpl"],1],
+["Top Speed",["90 kmph","100 kmph","110 kmph","125 kmph","140 kmph","170 kmph"],1],
+["Fuel Tank",["10 litre","12 litre","13 litre","15 litre","18 litre"],1],
+["Gearbox",["4 speed","5 speed","5 speed","6 speed"],1],
+["Brakes",["Drum / Drum","Disc / Drum","Disc / Disc","Disc / Disc with ABS"],1],
+["Starting",["Kick and Self Start","Self Start"],1],
+["Kerb Weight",["110 kg","125 kg","140 kg","165 kg","190 kg","220 kg"],1],
+["Colour",["Black","Red","Blue","Grey","White","Matte Green"]]],
+vehicle:[
+["Engine",["1.0 L Petrol","1.2 L Petrol","1.5 L Petrol","1.5 L Diesel","2.0 L Petrol","2.2 L Diesel"],1],
+["Max Power",["68 bhp","83 bhp","100 bhp","115 bhp","150 bhp","170 bhp"],1],
+["Fuel Type",["Petrol","Diesel","CNG","Petrol + CNG"]],
+["Transmission",["5 speed Manual","6 speed Manual","6 speed Automatic","AMT","CVT"]],
+["Mileage",["24 kmpl","21 kmpl","19 kmpl","17 kmpl","14 kmpl"]],
+["Seating Capacity",["4","5","5","7"],1],
+["Boot Space",["260 litre","330 litre","400 litre","480 litre","600 litre"],1],
+["Airbags",["2","4","6"],1],
+["Ground Clearance",["165 mm","180 mm","190 mm","205 mm"],1],
+["Safety Rating",["3 star","4 star","5 star"],1],
+["Colour",["White","Silver","Black","Red","Blue","Grey"]]]
+};
+
+/* 15 stable variants per category (seeded). Tiered fields rise together:
+   a higher level gets bigger RAM, battery, engine etc. */
+const SPEC_VARIANTS=15;
+const specCache={};
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function specVariants(slug){
+  if(specCache[slug])return specCache[slug];
+  const defs=SPEC_DEFS[slug]||[];
+  let seed=0;for(const ch of slug)seed=(seed*31+ch.charCodeAt(0))|0;
+  const rnd=mulberry32(seed),N=SPEC_VARIANTS,out=[];
+  for(let k=0;k<N;k++){
+    const level=((k*7)%N)/(N-1);
+    out.push(defs.map(([label,pool,tier])=>{
+      const i=tier
+        ?Math.max(0,Math.min(pool.length-1,Math.round(level*(pool.length-1)+(rnd()-.5)*.8)))
+        :Math.floor(rnd()*pool.length);
+      return [label,pool[i]];
+    }));
+  }
+  return specCache[slug]=out;
+}
+
+let specIdx=0;
+function specSlug(){
+  const v=$("pfCategory").value.trim().toLowerCase();
+  return SPEC_DEFS[v]?v:CATS[catIdx][0];
+}
+function addSpecRow(label,value){
+  const row=document.createElement("div");row.className="img-row";
+  row.innerHTML='<input class="pf-spec-k" maxlength="60" placeholder="Name (e.g. RAM)" style="flex:.8"><input class="pf-spec-v" maxlength="200" placeholder="Value"><button type="button" class="icon-btn" aria-label="Remove field"><i class="ph ph-x"></i></button>';
+  row.querySelector(".pf-spec-k").value=label||"";
+  row.querySelector(".pf-spec-v").value=value||"";
+  row.querySelector("button").onclick=()=>row.remove();
+  $("pfSpecList").appendChild(row);
+}
+function setSpecFields(pairs){
+  $("pfSpecList").innerHTML="";
+  pairs.forEach(p=>addSpecRow(p[0],p[1]));
+}
+function getSpecs(){
+  const out={};
+  document.querySelectorAll("#pfSpecList .img-row").forEach(r=>{
+    const k=r.querySelector(".pf-spec-k").value.trim(),v=r.querySelector(".pf-spec-v").value.trim();
+    if(k&&v)out[k]=v;
+  });
+  return out;
+}
+function loadSpecPreset(randomStart){
+  const v=specVariants(specSlug());
+  if(randomStart)specIdx=Math.floor(Math.random()*v.length);
+  specIdx=(specIdx+v.length)%v.length;
+  setSpecFields(v[specIdx]);
+  $("specCounter").textContent="Set "+(specIdx+1)+" / "+v.length;
+}
+function stepSpec(d){specIdx+=d;loadSpecPreset(false)}
+function loadSpecsForEdit(p){
+  const s=p.specifications&&typeof p.specifications==="object"?Object.entries(p.specifications):[];
+  if(s.length){setSpecFields(s);$("specCounter").textContent="Saved values"}
+  else loadSpecPreset(true);
+}
+$("specPrev").addEventListener("click",()=>stepSpec(-1));
+$("specNext").addEventListener("click",()=>stepSpec(1));
+$("pfAddSpec").addEventListener("click",()=>addSpecRow("",""));
+
 
 function renderProducts(){
   $("prodRows").innerHTML=products.length?products.map((p,i)=>{
@@ -1276,6 +1613,7 @@ function fillProductForm(p){
     pfReviews:(Array.isArray(p.reviews)?p.reviews:[]).map(r=>[r.rating,r.reviewerName||"",r.reviewerEmail||"",r.date||"",r.comment||""].join(" | ")).join("\n")};
   PF_IDS.forEach(id=>{$(id).value=v[id]==null?"":v[id]});
   setImageFields(p.images||[]);
+  loadSpecsForEdit(p);
   const ci=CATS.findIndex(c=>c[0]===p.category);if(ci>=0){catIdx=ci;$("pfCatSelect").value=String(ci)}
   editingProductId=p.id;
   $("prodFormTitle").textContent="Edit product";
@@ -1301,7 +1639,9 @@ function collectProductForm(){
     weight:$("pfWeight").value,
     dimensions:{width:$("pfDimW").value,height:$("pfDimH").value,depth:$("pfDimD").value},
     warrantyInformation:$("pfWarranty").value.trim(),shippingInformation:$("pfShipping").value.trim(),
-    returnPolicy:$("pfReturn").value.trim(),reviews
+    returnPolicy:$("pfReturn").value.trim(),
+    specifications:getSpecs(),
+    reviews
   };
 }
 $("prodRows").addEventListener("click",async e=>{
