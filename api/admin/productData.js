@@ -22,6 +22,11 @@
 //   adminPriceState
 // Nothing else in your app reads these paths.
 //
+// CATEGORY SPECIFICATIONS:
+//   Products can carry a "specifications" object, e.g.
+//   { "Processor": "Snapdragon 680", "RAM": "6 GB" }
+//   Labels and values are plain strings (sanitised by cleanSpecs below).
+//
 // Environment variables:
 //   ADMIN_API_KEY
 //   FIREBASE_SERVICE_ACCOUNT
@@ -222,6 +227,30 @@ function roundPrice(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+/* Category specifications: { label: value }.
+   Firebase keys cannot contain . # $ [ ] / so those are replaced. */
+function cleanSpecs(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const out = {};
+  let count = 0;
+
+  Object.keys(value).forEach(k => {
+    const key = String(k).replace(/[.#$\[\]\/]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+    const val = String(value[k] == null ? "" : value[k]).trim().slice(0, 200);
+
+    if (!key || !val) return;
+
+    if (++count > 40) {
+      throw new HttpError(400, "Too many specifications (max 40).");
+    }
+
+    out[key] = val;
+  });
+
+  return count ? out : null;
+}
+
 /* ---------------- Product Validation ---------------- */
 
 function cleanProduct(input) {
@@ -314,6 +343,7 @@ function cleanProduct(input) {
       "Minimum order quantity",
       { min: 1, max: 1e6, integer: true, fallback: 1 }
     ),
+    specifications: cleanSpecs(input.specifications),
     reviews
   };
 }
@@ -673,6 +703,10 @@ async function handleProducts(db, method, body) {
     const clean = cleanProduct(body);
 
     delete clean.sourceId;
+
+    // update() merges, so a changed specifications object must replace the
+    // old one completely (otherwise removed fields would stay behind).
+    await ref.child("specifications").remove();
 
     await ref.update(
       forFirebase({
