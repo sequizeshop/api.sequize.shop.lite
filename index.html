@@ -1818,5 +1818,232 @@ currentTab=firstTab;renderNav(Math.max(0,setIndexFor(firstTab)));
 showTab(firstTab);
 loadUsers();
 </script>
+
+<!-- Integrated Add Product by Link feature -->
+<style>
+.li-steps{font-size:12px;color:var(--muted);line-height:1.8;margin-top:10px;max-height:170px;overflow:auto}
+.li-steps .ok{color:var(--success)}.li-steps .bad{color:var(--warning)}.li-steps .err{color:var(--danger)}
+</style>
+<script>
+(function(){
+"use strict";
+var MAXP=30000;
+var PROXIES=[
+ function(u){return "https://api.allorigins.win/raw?url="+encodeURIComponent(u)},
+ function(u){return "https://corsproxy.io/?"+encodeURIComponent(u)},
+ function(u){return "https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u)},
+ function(u){return "https://r.jina.ai/"+u}];
+var RANGE={laptops:[22000,30000],smartphones:[7999,30000],tablets:[8000,30000],"mobile-accessories":[299,3999],"mens-shirts":[499,2499],tops:[399,1999],"womens-dresses":[699,3999],"mens-shoes":[999,5999],"womens-shoes":[799,4999],"mens-watches":[999,12999],"womens-watches":[999,9999],sunglasses:[499,4999],"womens-bags":[699,5999],"womens-jewellery":[299,4999],beauty:[199,1999],"skin-care":[199,2499],fragrances:[399,4999],furniture:[4999,29999],groceries:[49,999],"home-decoration":[299,4999],"kitchen-accessories":[399,5999],"sports-accessories":[299,4999],motorcycle:[24999,29999],vehicle:[24999,29999]};
+var RULES=[
+["laptops",/laptop|notebook|macbook|chromebook/],
+["tablets",/tablet|ipad|\btab\b/],
+["mobile-accessories",/charger|cable|power ?bank|earbud|earphone|headphone|neckband|\btws\b|headset|adapter|phone case|back cover|screen guard|speaker|soundbar/],
+["smartphones",/smartphone|mobile phone|\bphones?\b|iphone|\bmobiles?\b/],
+["mens-watches",/watch/],["sunglasses",/sunglass|eyewear/],
+["womens-bags",/\bbags?\b|backpack|handbag|clutch|tote/],
+["womens-jewellery",/jewel|necklace|earring|bracelet|bangle|anklet|\bring\b/],
+["womens-dresses",/dress|kurta|anarkali|saree|gown/],["tops",/\btops?\b|tunic|blouse/],
+["mens-shirts",/shirt|polo/],["mens-shoes",/shoe|sneaker|loafer|sandal|footwear|boots?\b/],
+["fragrances",/fragrance|perfume|deodorant|cologne|\bedp\b|\bedt\b/],
+["skin-care",/skin ?care|moisturi|serum|sunscreen|face wash|cream|lotion/],
+["beauty",/beauty|lipstick|mascara|foundation|eyeliner|kajal|makeup|nail polish/],
+["furniture",/furniture|sofa|chair|\btable\b|wardrobe|\bbed\b|shelf/],
+["kitchen-accessories",/kitchen|cookware|cooker|mixer|grinder|tawa|kettle|toaster|microwave|air fryer|induction|refrigerator|washing machine|\boven\b|juicer|blender/],
+["groceries",/grocer|snack|\brice\b|\bdal\b|\batta\b|\btea\b|coffee|biscuit/],
+["home-decoration",/decor|lamp|vase|wall art|showpiece|clock|candle|photo frame/],
+["sports-accessories",/sport|fitness|yoga|dumbbell|cricket|football|badminton|gym/],
+["motorcycle",/motorcycle|motorbike|\bbike\b|scooter/],["vehicle",/\bcar\b|vehicle|\bsuv\b|sedan/]];
+var IMG=/https?:\/\/[^"'\s<>\\)\]]+?\.(?:jpe?g|png|webp|avif)(?:\?[^"'\s<>\\)\]]*)?/gi;
+var JUNK=/sprite|logo|icon|favicon|pixel|blank|placeholder|lazy|loader|spinner|1x1|avatar|badge|banner|payment|flag|social|footer|header|arrow|button|app-?store|play-?store|\/UI(%20| )Assets\/|\/CMS\//i;
+
+function esc(s){return String(s==null?"":s)}
+function unesc(s){return s.replace(/&q;/g,'"').replace(/&a;/g,"&").replace(/&s;/g,"'").replace(/&l;/g,"<").replace(/&g;/g,">").replace(/\\u002F/gi,"/").replace(/\\u0026/gi,"&").replace(/\\\//g,"/").replace(/&amp;/g,"&")}
+function cleanTitle(t){return esc(t).replace(/\s+/g," ").trim().replace(/^Buy\s+/i,"").replace(/\s+Online\b.*$/i,"").trim()}
+function slugInfo(url){
+  var path="";try{path=decodeURIComponent(new URL(url).pathname)}catch(e){}
+  var seg=(path.split("/p/")[0].split("/").filter(Boolean).pop()||"").replace(/-+$/,"");
+  var txt=seg.replace(/(\d+)-(\d+)-(inch|cm|mm|kg)/gi,"$1.$2 $3").replace(/-/g," ").replace(/\s+/g," ").trim();
+  var pid=(url.match(/\/p\/(\d+)/)||url.match(/(\d{5,})/)||[])[1]||"";
+  return {text:txt,pid:pid,title:txt.replace(/\b[a-z]/g,function(c){return c.toUpperCase()}).replace(/\b(amd|hp|ssd|ips|fhd|hd|gb|tb|led|oled|usb|tws|5g|4g|tv|hdmi|rtx|gtx|ddr\d*|cm|mm|kg|ac)\b/gi,function(c){return c.toUpperCase()})};
+}
+function detectSlug(text){
+  var t=text.toLowerCase(),i,s=null;
+  for(i=0;i<RULES.length;i++)if(RULES[i][1].test(t)){s=RULES[i][0];break}
+  var w=/women|ladies|girls?\b/.test(t);
+  if(s==="mens-watches"&&w)s="womens-watches";
+  if(s==="mens-shoes"&&w)s="womens-shoes";
+  if(s==="mens-shirts"&&w)s="tops";
+  return s;
+}
+function cleanImgs(list,pid){
+  var seen={},out=[];
+  list.forEach(function(u){
+    var x;try{x=new URL(u)}catch(e){return}
+    if(JUNK.test(u)||/\.(svg|gif)(\?|$)/i.test(x.pathname))return;
+    x.searchParams.delete("tr");
+    var k=x.pathname.toLowerCase();if(seen[k])return;seen[k]=1;
+    out.push({u:x.href,m:pid&&k.indexOf(pid)>-1});
+  });
+  var m=out.filter(function(o){return o.m});
+  return (m.length?m:out).slice(0,8).map(function(o){return o.u});
+}
+function genPrice(slug){
+  var r=RANGE[slug]||[499,MAXP],hi=Math.min(r[1],MAXP),step=hi>=10000?1000:(hi>=1000?100:10);
+  var p=Math.floor((r[0]+Math.random()*(hi-r[0]))/step)*step+step-1;
+  return Math.max(r[0],Math.min(p,MAXP-1));
+}
+function rvFromJson(root){
+  var out=[],seen=new Set();
+  (function w(o,d){
+    if(!o||typeof o!=="object"||d>12||seen.has(o))return;seen.add(o);
+    if(Array.isArray(o))return o.forEach(function(x){w(x,d+1)});
+    var txt="",rt=null,nm="",dt="",strong=false;
+    Object.keys(o).forEach(function(k){var v=o[k];
+      if(/^(review_?text|review_?body|reviewbody|comments?|review|feedback)$/i.test(k)&&typeof v==="string"){txt=v.trim();strong=true}
+      else if(/^(rating|rating_?value|stars?|star_?rating)$/i.test(k)){var n=parseFloat(v&&v.value!=null?v.value:v);if(n>=1&&n<=5)rt=n}
+      else if(/^(user_?name|username|display_?name|author|author_?name|reviewer|reviewer_?name|customer_?name)$/i.test(k))nm=typeof v==="object"&&v?esc(v.name):esc(v);
+      else if(/^(date|created_?at|review_?date|submission_?time|date_?published)$/i.test(k))dt=/^\d{10,13}$/.test(esc(v))?new Date(+v>1e12?+v:+v*1e3).toISOString().slice(0,10):esc(v).slice(0,10)});
+    if(strong&&rt!=null&&txt.length>4)out.push({rating:rt,name:nm||"Customer",date:dt,comment:txt});
+    else Object.keys(o).forEach(function(k){w(o[k],d+1)});
+  })(root,0);
+  return out;
+}
+function parse(text){
+  var o={title:"",desc:"",crumbs:[],imgs:[],price:null,rating:null,reviews:[]};
+  (unesc(text).match(IMG)||[]).forEach(function(u){o.imgs.push(u)});
+  if(!/<(html|body|head|div)\b/i.test(text.slice(0,4000))){      /* jina markdown */
+    var t=text.match(/^Title:\s*(.+)$/m);if(t)o.title=t[1];
+    var f=text.match(/Key Features\s*\n+((?:\s*[-*] .+\n?)+)/i);
+    if(f)o.desc=f[1].split("\n").map(function(l){return l.replace(/^\s*[-*]\s*/,"").trim()}).filter(Boolean).slice(0,8).join(". ")+".";
+    return o;
+  }
+  var d=new DOMParser().parseFromString(text,"text/html"),prod=null;
+  var m=function(n){var e=d.querySelector('meta[property="'+n+'"],meta[name="'+n+'"]');return e?(e.content||"").trim():""};
+  d.querySelectorAll('script[type="application/ld+json"]').forEach(function(s){try{(function w(x){
+    if(!x||typeof x!=="object")return;if(Array.isArray(x))return x.forEach(w);
+    if(/Product/i.test([].concat(x["@type"]||[]).join())&&!prod)prod=x;
+    if(/BreadcrumbList/i.test(x["@type"]||"")&&x.itemListElement)x.itemListElement.forEach(function(i){var n=i.name||(i.item&&i.item.name);if(n)o.crumbs.push(n)});
+    Object.values(x).forEach(w)})(JSON.parse(s.textContent))}catch(e){}});
+  o.title=(prod&&prod.name)||(d.querySelector("h1")||{}).textContent||m("og:title")||d.title||"";
+  if(m("og:image"))o.imgs.unshift(m("og:image"));
+  if(prod){
+    [].concat(prod.image||[]).forEach(function(i){o.imgs.push(typeof i==="string"?i:(i&&i.url)||"")});
+    [].concat(prod.offers||[]).forEach(function(f){var p=parseFloat(f&&(f.price||f.lowPrice));if(p>0&&!o.price)o.price=p});
+    var ar=prod.aggregateRating;if(ar){var r=parseFloat(ar.ratingValue);if(r>=1&&r<=5)o.rating=r}
+    if(prod.description&&!/^buy\b[\s\S]*\b(online|shop now)/i.test(prod.description))o.desc=prod.description;
+    o.reviews=rvFromJson(prod.review||[]);
+  }
+  d.querySelectorAll('[class*="breadcrumb" i] a').forEach(function(a){var t=a.textContent.trim();if(t&&t.length<60&&!o.crumbs.length||t&&t.length<60&&o.crumbs.indexOf(t)<0)o.crumbs.push(t)});
+  if(!o.crumbs.length){var tmp=[];d.querySelectorAll('a[href*="/c/"]').forEach(function(a){var t=a.textContent.trim();if(t&&t.length<60&&tmp.indexOf(t)<0)tmp.push(t)});if(tmp.length&&tmp.length<=6)o.crumbs=tmp}
+  if(!o.desc){
+    var hs=[].slice.call(d.querySelectorAll("h1,h2,h3,h4,h5,h6")).filter(function(h){return h.textContent.trim().toLowerCase()==="key features"}).reverse();
+    for(var i=0;i<hs.length&&!o.desc;i++){
+      var n=hs[i].nextElementSibling,ul=n?(n.tagName==="UL"?n:n.querySelector("ul")):null;
+      if(ul){var li=[].slice.call(ul.querySelectorAll("li")).map(function(l){return l.textContent.replace(/\s+/g," ").trim()}).filter(Boolean);if(li.length>=3)o.desc=li.slice(0,8).join(". ")+"."}
+    }
+  }
+  if(!o.desc){var og=m("og:description");if(og&&!/^buy\b[\s\S]*\b(online|shop now)/i.test(og))o.desc=og}
+  if(!o.price){var els=d.querySelectorAll('[id*="price" i],[class*="price" i]');for(var j=0;j<els.length;j++){var pm=els[j].textContent.replace(/\s+/g," ").match(/₹\s*([\d,]{3,9})/);if(pm){o.price=parseFloat(pm[1].replace(/,/g,""));break}}}
+  if(!o.reviews.length)d.querySelectorAll('script[type="application/json"],script[id$="-state"]').forEach(function(s){
+    if(o.reviews.length)return;var tx=unesc(s.textContent||"");if(!/review|rating/i.test(tx))return;try{o.reviews=rvFromJson(JSON.parse(tx))}catch(e){}});
+  return o;
+}
+function specPairs(text,slug,base){
+  var t=" "+text+" ",norm=function(s){return s.toLowerCase().replace(/[^a-z0-9.]/g,"")},nt=norm(t);
+  var g=function(re){var x=t.match(re);return x?x[0].replace(/\s+/g," ").trim():""};
+  var nums=[],re=/(\d+)\s*(GB|TB)\s*(SSD|ROM|HDD|RAM|DDR\d\w*|LPDDR\d\w*)?/gi,mm;
+  while((mm=re.exec(t)))nums.push({n:+mm[1],u:mm[2].toUpperCase(),tag:(mm[3]||"").toUpperCase(),gb:+mm[1]*(/TB/i.test(mm[2])?1024:1)});
+  var ram=nums.filter(function(x){return /RAM|DDR/.test(x.tag)})[0],sto=nums.filter(function(x){return /SSD|ROM|HDD/.test(x.tag)})[0];
+  if(!ram&&nums.length>1)ram=nums.filter(function(x){return x!==sto&&x.gb<=64})[0];
+  if(!sto)sto=nums.filter(function(x){return x!==ram}).sort(function(a,b){return b.gb-a.gb})[0];
+  var ddr=(t.match(/\b(LPDDR\d\w*|DDR\d\w*)\b/i)||[])[1],size=t.match(/(\d{1,2}(?:\.\d)?)\s*(?:inch|inches|")/i),dty=g(/\b(FHD\+?|Full HD|QHD\+?|2K|4K|HD\+?|AMOLED|OLED|IPS|LCD)\b/i);
+  var R={
+   "ram":ram?ram.n+" "+ram.u+(ddr&&slug==="laptops"?" "+ddr.toUpperCase():""):"",
+   "storage":sto?sto.n+" "+sto.u+(slug==="laptops"&&/SSD/i.test(t)?" SSD":""):"",
+   "processor":g(/Intel Core (?:Ultra )?i[3579][-\s]?\w+|AMD Ryzen [3579]\s*\d{4}\w*|AMD Ryzen [3579]|Ryzen [3579]\s*\d{4}\w*|Ryzen [3579]|Snapdragon\s*[\w+]+(?:\s*Gen\s*\d)?|Apple M\d\w*|Dimensity\s*\d+\w*|Helio\s*\w+|Exynos\s*\d+|Apple A\d+\w*/i),
+   "display":size?size[1]+" inch"+(dty?" "+dty:""):"",
+   "operating system":g(/Windows 1[01](?: Home| Pro)?|Android \d+|iPadOS \d+|iOS \d+|macOS|Ubuntu|Chrome ?OS/i),
+   "battery":(g(/\d{4,5}\s*mAh/i)||g(/\d{2,3}\s*Wh/i)).replace(/(\d)\s*(mAh|Wh)/i,"$1 $2"),
+   "graphics":g(/NVIDIA GeForce [\w ]*?(?:RTX|GTX) ?\d{3,4}\w*|AMD Radeon(?: Graphics)?|Intel (?:UHD|Iris Xe)[\w ]*Graphics/i).replace(/^AMD Radeon$/i,"AMD Radeon Graphics"),
+   "charging speed":slug==="smartphones"?g(/\d{2,3}\s*W\b/i).replace(/\s+/g,""):"",
+   "rear camera":(slug==="smartphones"||slug==="tablets")?g(/\d{1,3}\s*MP/i).replace(/\s*MP/i," MP"):"",
+   "colour":(typeof COL!=="undefined"?COL:[]).filter(function(c){return t.toLowerCase().indexOf(c.toLowerCase())>-1})[0]||""};
+  var defs=(typeof SPEC_DEFS!=="undefined"?SPEC_DEFS:{})[slug]||[];
+  return base.map(function(p){
+    var k=p[0],v=R[k.toLowerCase()];
+    if(!v){var d=defs.filter(function(x){return x[0]===k})[0],best="";
+      if(d)d[1].forEach(function(c){if(norm(c).length>2&&nt.indexOf(norm(c))>-1&&c.length>best.length)best=c});
+      v=best}
+    return [k,v||p[1]];
+  });
+}
+
+/* ---------- UI ---------- */
+function init(){
+  var form=$("prodForm");if(!form||$("linkImportBtn"))return;
+  var wrap=document.createElement("div");wrap.className="form-group";
+  wrap.innerHTML='<button type="button" class="btn btn-primary" id="linkImportBtn"><i class="ph ph-link"></i> Add product by Link</button><div class="form-hint">Product ka link daalo: title, description, sirf product ki images, category, price, rating aur product information khud bhar jayegi.</div>';
+  form.insertBefore(wrap,form.firstChild);
+  var dlg=document.createElement("div");dlg.className="dialog-backdrop";
+  dlg.innerHTML='<div class="dialog" role="dialog" aria-modal="true"><h2>Add product by Link</h2><p>Product page ka link paste karo (Croma ya koi bhi store).</p><div class="form-group"><input id="liUrl" type="url" placeholder="https://www.croma.com/.../p/323067"></div><div class="li-steps" id="liSteps"></div><div class="dialog-actions"><button type="button" class="btn" id="liCancel">Close</button><button type="button" class="btn btn-primary" id="liGo"><i class="ph ph-magic-wand"></i> Fetch &amp; fill</button></div></div>';
+  document.body.appendChild(dlg);
+  var busyNow=false,box=$("liSteps");
+  function step(msg,cls,spin){var d=document.createElement("div");d.className=cls||"";d.innerHTML=(spin?'<span class="spinner"></span>':"")+msg.replace(/&/g,"&amp;").replace(/</g,"&lt;");box.appendChild(d);box.scrollTop=1e6;return d}
+  function done(d,msg,cls){d.innerHTML="";d.className=cls||"ok";d.textContent=msg}
+  function grab(u,ms){var c=new AbortController(),t=setTimeout(function(){c.abort()},ms);
+    return fetch(u,{signal:c.signal}).then(function(r){return r.text().then(function(x){return r.ok&&x.length>800?x:""})}).catch(function(){return""}).then(function(x){clearTimeout(t);return x})}
+  $("linkImportBtn").onclick=function(){box.innerHTML="";dlg.classList.add("open");setTimeout(function(){$("liUrl").focus()},50)};
+  $("liCancel").onclick=function(){if(!busyNow)dlg.classList.remove("open")};
+  async function run(){
+    var url=$("liUrl").value.trim();
+    if(!/^https?:\/\//i.test(url)){box.innerHTML="";step("Sahi link daalo (https:// se shuru).","err");return}
+    busyNow=true;$("liGo").disabled=true;box.innerHTML="";
+    try{
+      var s1=step("Page mangaya ja raha hai (4 raaste se)...","",true);
+      var texts=await Promise.all(PROXIES.map(function(p){return grab(p(url),22000)}));
+      var okN=texts.filter(Boolean).length;
+      done(s1,okN+"/4 raaste se page mila",okN?"ok":"bad");
+      var s2=step("Product pehchana ja raha hai...","",true);
+      var M={title:"",desc:"",crumbs:[],imgs:[],price:null,rating:null,reviews:[]};
+      texts.filter(Boolean).forEach(function(tx){var p=parse(tx);
+        M.title=M.title||p.title;M.desc=M.desc||p.desc;if(!M.crumbs.length)M.crumbs=p.crumbs;
+        M.imgs=M.imgs.concat(p.imgs);M.price=M.price||p.price;M.rating=M.rating||p.rating;if(!M.reviews.length)M.reviews=p.reviews});
+      var sl=slugInfo(url),title=cleanTitle(M.title)||sl.title||"New product";
+      var ctx=M.crumbs.join(" ")+" "+title+" "+sl.text,slug=detectSlug(ctx);
+      var idx=slug?CATS.findIndex(function(c){return c[0]===slug}):-1;
+      done(s2,idx>=0?"Product: "+title.slice(0,50)+" → category "+formatCategory(slug):"Category match nahi mili, current category rakhi",idx>=0?"ok":"bad");
+      var s3=step("Images chhaanti ja rahi hain (logo/icons hataye ja rahe hain)...","",true);
+      var imgs=cleanImgs(M.imgs,sl.pid);
+      done(s3,imgs.length?imgs.length+" product images mili":"Koi product image nahi mili (link se baad me daal sakte ho)",imgs.length?"ok":"bad");
+      var s4=step("Form aur product information bhari ja rahi hai...","",true);
+      if(idx>=0)catIdx=idx;
+      applyPreset();
+      var cur=CATS[catIdx][0],set=function(id,v){$(id).value=v};
+      var price=M.price&&M.price>0&&M.price<=MAXP?Math.round(M.price):"";
+      var rating=M.rating||"";
+      var brand=(title.split(/\s+/)[0]||"").replace(/[^\w&+.-]/g,"");if(!brand||/^\d/.test(brand))brand="Generic";
+      set("pfTitle",title.slice(0,200));
+      set("pfDescription",(M.desc||"").slice(0,2000));
+      set("pfBrand",brand);set("pfPrice",price);$("pfPrice").dispatchEvent(new Event("input"));
+      set("pfRating",rating);
+      set("pfTags",CATS[catIdx][1].split(",").map(function(x){return x.trim()}).concat(brand.toLowerCase()).filter(function(x,i,a){return x&&a.indexOf(x)===i}).join(", "));
+      setImageFields(imgs);set("pfThumb",imgs[0]||"");
+      var rv=M.reviews.slice(0,20);
+      set("pfReviews",rv.map(function(r){return [r.rating,r.name,"",r.date||"",r.comment].join(" | ")}).join("\n"));
+      var pairs=specPairs(title+" "+M.desc+" "+sl.text,cur,getSpecs?Object.entries(getSpecs()):[]);
+      setSpecFields(pairs);$("specCounter").textContent="Product ke hisaab se";
+      done(s4,"Form bhar gaya"+(M.price&&M.price<=MAXP?"":" • price page se nahi mila, khali chhoda")+(M.reviews.length?" • "+rv.length+" asli reviews":" • reviews nahi mile, khali chhode"),"ok");
+      showToast("Product fill ho gaya: "+title.slice(0,40));
+      setTimeout(function(){dlg.classList.remove("open");$("prodForm").scrollIntoView({behavior:"smooth",block:"start"})},1600);
+    }catch(e){step("Error: "+(e&&e.message||e),"err")}
+    finally{busyNow=false;$("liGo").disabled=false}
+  }
+  $("liGo").onclick=run;
+  $("liUrl").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();run()}});
+}
+if(typeof module!=="undefined")module.exports={slugInfo:slugInfo,detectSlug:detectSlug,cleanImgs:cleanImgs,genPrice:genPrice,specPairs:specPairs,rvFromJson:rvFromJson,RANGE:RANGE,MAXP:MAXP};
+else init();
+})();
+</script>
 </body>
 </html>
